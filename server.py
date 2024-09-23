@@ -13,7 +13,7 @@ import google.generativeai as genai
 import faiss
 from concurrent.futures import ThreadPoolExecutor
 import time
-from flask_caching import Cache
+
 
 # Load environment variables
 load_dotenv()
@@ -32,7 +32,7 @@ UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'pdf', 'jpg', 'png', 'jpeg'}
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-cache = Cache(app)
+
 
 # Create upload folder if it doesn't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -84,7 +84,7 @@ def get_conversation_chain():
 
     raise ValueError("All API keys failed.")
 
-@cache.cached(timeout=3600, query_string=True)
+
 def get_store_in_vector(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
