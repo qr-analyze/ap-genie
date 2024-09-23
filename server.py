@@ -22,7 +22,7 @@ google_api_key = os.getenv("GOOGLE_API_KEY")
 if not google_api_key:
     raise ValueError(
         "Google API Key not found. Please check your environment settings.")
-genai.configure(api_key=google_api_key)
+# genai.configure(api_key=google_api_key)
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -70,11 +70,26 @@ def get_conversation_chain():
     Question: \n{question}\n
     Answer:
     """
-    model = ChatGoogleGenerativeAI(
-        model="gemini-1.5-pro-latest", temperature=0.1)
-    prompt = PromptTemplate(template=prompt_template,
-                            input_variables=["context", "question"])
+    genai_keys = [
+        "AIzaSyD4AvqSy5yE6FVIceijwFViKi76SObHsOY",
+        "AIzaSyAPasufInx1YSA2N83orvuagkMe4ZnSOfE",
+        'AIzaSyCu4O8kGxwU1BqGhlbiEnB-QQpEPzuEKfM',
+        'AIzaSyCvb9F0bK_R4H14KDnWnbJeZSnIWvsDlAM'
+
+    ]
+    for idx, api_key in enumerate(genai_keys):
+        try:
+            genai.configure(api_key=api_key)
+            model = ChatGoogleGenerativeAI(
+                model="gemini-1.5-pro-latest", temperature=0.1)
+            prompt = PromptTemplate(template=prompt_template,
+                                    input_variables=["context", "question"])
+        except:
+            print("invalid response from any api key")
+
     return load_qa_chain(model, chain_type="stuff", prompt=prompt)
+
+
 
 
 def get_store_in_vector(text_chunks):
