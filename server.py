@@ -12,6 +12,8 @@ from langchain.prompts import PromptTemplate
 import google.generativeai as genai
 import faiss
 from concurrent.futures import ThreadPoolExecutor
+import time
+from flask_caching import Cache
 
 # Load environment variables
 load_dotenv()
@@ -20,9 +22,7 @@ faiss.omp_set_num_threads(32)
 # Configure Google API
 google_api_key = os.getenv("GOOGLE_API_KEY")
 if not google_api_key:
-    raise ValueError(
-        "Google API Key not found. Please check your environment settings.")
-# genai.configure(api_key=google_api_key)
+    raise ValueError("Google API Key not found. Please check your environment settings.")
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -32,14 +32,13 @@ UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'pdf', 'jpg', 'png', 'jpeg'}
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+cache = Cache(app)
 
 # Create upload folder if it doesn't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
 
 def get_pdf_content(file_path):
     text = ""
@@ -55,12 +54,9 @@ def get_pdf_content(file_path):
 
     return text
 
-
 def get_text_chunks(text):
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=10000, chunk_overlap=1000)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
     return text_splitter.split_text(text)
-
 
 def get_conversation_chain():
     prompt_template = """
@@ -75,29 +71,25 @@ def get_conversation_chain():
         "AIzaSyAPasufInx1YSA2N83orvuagkMe4ZnSOfE",
         'AIzaSyCu4O8kGxwU1BqGhlbiEnB-QQpEPzuEKfM',
         'AIzaSyCvb9F0bK_R4H14KDnWnbJeZSnIWvsDlAM'
-
     ]
+    
     for idx, api_key in enumerate(genai_keys):
         try:
             genai.configure(api_key=api_key)
-            model = ChatGoogleGenerativeAI(
-                model="gemini-1.5-pro-latest", temperature=0.1)
-            prompt = PromptTemplate(template=prompt_template,
-                                    input_variables=["context", "question"])
-        except:
-            print("invalid response from any api key")
+            model = ChatGoogleGenerativeAI(model="gemini-1.5-pro-latest", temperature=0.1)
+            prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
+            return load_qa_chain(model, chain_type="stuff", prompt=prompt)
+        except Exception as e:
+            logging.error(f"Error with API key index {idx}: {e}")
 
-    return load_qa_chain(model, chain_type="stuff", prompt=prompt)
+    raise ValueError("All API keys failed.")
 
-
-
-
+@cache.cached(timeout=3600, query_string=True)
 def get_store_in_vector(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
     logging.info("Vector store created and saved locally.")
-
 
 def analyze_image(file_path):
     system_instruction = """
@@ -109,26 +101,23 @@ def analyze_image(file_path):
         "AIzaSyAPasufInx1YSA2N83orvuagkMe4ZnSOfE",
         'AIzaSyCu4O8kGxwU1BqGhlbiEnB-QQpEPzuEKfM',
         'AIzaSyCvb9F0bK_R4H14KDnWnbJeZSnIWvsDlAM'
-
     ]
-    for idx, api_key in enumerate(genai_keys):
-        try:
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(
-                model_name="gemini-1.5-flash",
-                system_instruction=system_instruction,
-            )
-            myfile = genai.upload_file(file_path)
-            response = model.generate_content(
-                [myfile, "\n\n",
-                    "Can you analyze this image and provide insights?"]
-            )
-            if response and hasattr(response, 'text'):
-                return response.text
-        except:
-            logging.error("error rotating api keys")
-            return None
+    
+    for api_key in genai_keys:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=system_instruction)
+        myfile = genai.upload_file(file_path)
 
+        for _ in range(3):  # Retry 3 times
+            try:
+                response = model.generate_content([myfile, "\n\n", "Can you analyze this image and provide insights?"])
+                if response and hasattr(response, 'text'):
+                    return response.text
+                break
+            except Exception as e:
+                logging.error(f"API call failed: {e}")
+                time.sleep(2)  # Wait before retrying
+    return None
 
 @app.route("/", methods=["GET", "POST"])
 def index():
@@ -144,16 +133,13 @@ def index():
             for file in files:
                 if file and allowed_file(file.filename):
                     filename = secure_filename(file.filename)
-                    file_path = os.path.join(
-                        app.config['UPLOAD_FOLDER'], filename)
+                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                     file.save(file_path)
 
                     if filename.lower().endswith(".pdf"):
-                        futures.append(executor.submit(
-                            get_pdf_content, file_path))
+                        futures.append(executor.submit(get_pdf_content, file_path))
                     else:
-                        futures.append(executor.submit(
-                            analyze_image, file_path))
+                        futures.append(executor.submit(analyze_image, file_path))
 
             for future in futures:
                 result = future.result()
@@ -170,15 +156,13 @@ def index():
 
     return render_template("index.html")
 
-
 @app.route("/ask", methods=["POST"])
 def ask():
     user_question = request.json.get("question")
     if user_question:
         embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         try:
-            vector_store = FAISS.load_local(
-                "faiss_index", embeddings, allow_dangerous_deserialization=True)
+            vector_store = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
             logging.info("Vector store loaded successfully.")
         except Exception as e:
             logging.error(f"Error loading vector store: {e}")
@@ -186,16 +170,13 @@ def ask():
 
         docs = vector_store.similarity_search(user_question)
         chain = get_conversation_chain()
-        response = chain(
-            {"input_documents": docs, "question": user_question}, return_only_outputs=True)
+        response = chain({"input_documents": docs, "question": user_question}, return_only_outputs=True)
 
         output_text = response.get("output_text", "No response generated.")
         return jsonify({"messages": [output_text]}), 200
 
     return jsonify({"messages": ["No question provided."]}), 400
 
-
 if __name__ == "__main__":
     app.secret_key = 'ANY_SECRET_KEY'
-    app.run(host="0.0.0.0", port=8000,debug=True)  # Adjust the port if necessary
-    
+    app.run(host="0.0.0.0", port=8000, debug=True)  # Adjust the port if necessary
